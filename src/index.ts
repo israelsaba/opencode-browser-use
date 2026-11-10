@@ -2,7 +2,8 @@ import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Plugin } from "@opencode/plugin";
-import type { BrowserUseRpc, StoreSecretParams } from "./rpc.js";
+import type { StoreSecretParams } from "./rpc.js";
+import { BrowserUseRpc } from "./rpc.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -31,11 +32,17 @@ export async function resolveGoogleKey(
   return process.env.GOOGLE_API_KEY;
 }
 
+export interface ProcessResult {
+  stdout: string;
+  steps: number;
+  provider?: string;
+}
+
 export function runProcess(
   args: string[],
   env: NodeJS.ProcessEnv,
   signal?: AbortSignal,
-): Promise<string> {
+): Promise<ProcessResult> {
   return new Promise((resolve, reject) => {
     const proc = spawn("python3", args, { env, signal });
     let stdout = "";
@@ -47,13 +54,33 @@ export function runProcess(
       stderr += d;
     });
     proc.on("close", (code) => {
-      if (code === 0) resolve(stdout.trim());
-      else
+      if (code === 0) {
+        let steps = 1;
+        let provider: string | undefined;
+        for (const line of stderr.split("\n")) {
+          const trimmed = line.trim();
+          if (trimmed.startsWith("{") && trimmed.includes('"usage"')) {
+            try {
+              const parsed = JSON.parse(trimmed);
+              if (parsed.usage?.steps) {
+                steps = parsed.usage.steps;
+              }
+              if (parsed.usage?.provider) {
+                provider = parsed.usage.provider;
+              }
+            } catch {
+              // Ignore parse errors on stderr
+            }
+          }
+        }
+        resolve({ stdout: stdout.trim(), steps, provider });
+      } else {
         reject(
           new Error(
             `Browser runner failed (exit ${code}): ${stderr || stdout}`,
           ),
         );
+      }
     });
     proc.on("error", (err) => {
       reject(err);
@@ -77,9 +104,10 @@ export function buildRunnerArgs(
 export default Plugin.define({
   id: "browser-use",
   async setup(ctx: Plugin.Context) {
-    // Implement RPC methods for TUI
-    const rpc: BrowserUseRpc = {
-      async storeKeychainSecret({ service, secret }: StoreSecretParams) {
+    // Register RPC methods & events for TUI and external clients
+    const registration = await ctx.rpc.register(BrowserUseRpc, {
+      storeKeychainSecret: async (input) => {
+        const { service, secret } = input as StoreSecretParams;
         if (!service || !secret) {
           throw new Error(
             "Invalid parameters: service and secret are required",
@@ -97,7 +125,7 @@ export default Plugin.define({
             secret,
           ]);
           proc.on("close", (code) => {
-            if (code === 0) resolve();
+            if (code === 0) resolve({});
             else
               reject(
                 new Error(`Failed to store Keychain secret (exit ${code})`),
@@ -106,17 +134,20 @@ export default Plugin.define({
           proc.on("error", (err) => reject(err));
         });
       },
-      async getActiveProvider() {
+      getActiveProvider: async () => {
         const saved = await ctx.storage.get("provider");
-        return (saved as "google" | "jev") || "google";
+        const provider = (saved as "google" | "jev") || "jev";
+        return { provider };
       },
-      async setActiveProvider(provider: "google" | "jev") {
+      setActiveProvider: async (input) => {
+        const { provider } = input as { provider: "google" | "jev" };
         if (provider !== "google" && provider !== "jev") {
           throw new Error(`Invalid provider: ${provider}`);
         }
         await ctx.storage.set("provider", provider);
+        return {};
       },
-    };
+    });
 
     // Register tool transform
     await ctx.tool.transform((editor) => {
@@ -134,7 +165,7 @@ export default Plugin.define({
             provider: {
               type: "string",
               enum: ["google", "jev"],
-              description: "Engine provider (default: google or saved default)",
+              description: "Engine provider (default: jev or saved default)",
             },
             url: { type: "string", description: "Optional starting URL." },
             headed: {
@@ -148,9 +179,14 @@ export default Plugin.define({
         },
         execute: async (input, toolCtx) => {
           const task = (input as { task: string }).task;
+          const savedProvider = (await ctx.storage.get("provider")) as
+            | "google"
+            | "jev"
+            | undefined;
           const requestedProvider =
             (input as { provider?: "google" | "jev" }).provider ||
-            (await rpc.getActiveProvider());
+            savedProvider ||
+            "jev";
           const url = (input as { url?: string }).url;
           const headed = (input as { headed?: boolean }).headed;
 
@@ -178,40 +214,39 @@ export default Plugin.define({
           );
 
           try {
-            const result = await runProcess(args, runnerEnv, toolCtx.signal);
+            const { stdout: result, steps } = await runProcess(
+              args,
+              runnerEnv,
+              toolCtx.signal,
+            );
 
             // Emit cost/usage event for TUI prompt footer
-            const costEstimate = requestedProvider === "jev" ? 0.002 : 0.004;
-            const emitFn = (ctx as any).event?.emit;
-            if (typeof emitFn === "function") {
-              await emitFn("browser-use:usage", {
-                cost: costEstimate,
-                steps: 1,
-                provider: requestedProvider,
-              });
-            }
+            const perActionCost = requestedProvider === "jev" ? 0.002 : 0.004;
+            const costEstimate = Number((steps * perActionCost).toFixed(4));
+
+            await registration.events.emit("usage", {
+              cost: costEstimate,
+              steps,
+              provider: requestedProvider,
+              sessionID: toolCtx.sessionID,
+            });
 
             return { content: result };
           } catch (err: unknown) {
             const errorMsg = err instanceof Error ? err.message : String(err);
             if (errorMsg.includes("is missing from the macOS Keychain")) {
-              const emitFn = (ctx as any).event?.emit;
-              if (typeof emitFn === "function") {
-                await emitFn("browser-use:missing-key", {
-                  provider: requestedProvider,
-                  service:
-                    requestedProvider === "jev"
-                      ? "typesafe_ai_api"
-                      : "browser-use-google-api-key",
-                });
-              }
+              await registration.events.emit("missing_key", {
+                provider: requestedProvider,
+                service:
+                  requestedProvider === "jev"
+                    ? "typesafe_ai_api"
+                    : "browser-use-google-api-key",
+              });
             }
             throw err;
           }
         },
       });
     });
-
-    return () => {};
   },
 });

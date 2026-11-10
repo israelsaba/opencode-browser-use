@@ -1,27 +1,54 @@
 import { Plugin } from "@opencode/plugin/tui";
-import { createSignal } from "solid-js";
 import type { BrowserUseUsageEvent, MissingKeyEvent } from "./rpc.js";
+import { BrowserUseRpc } from "./rpc.js";
+
+interface SessionBrowserStats {
+  steps: number;
+  cost: number;
+  provider?: "google" | "jev";
+}
+
+interface BrowserStore {
+  bySession: Record<string, SessionBrowserStats>;
+}
 
 export default Plugin.define({
   id: "browser-use.tui",
   setup(context) {
-    const [stats, setStats] = createSignal<{ steps: number; cost: number }>({
-      steps: 0,
-      cost: 0,
-    });
+    const [stats, setStats] = context.storage.store<BrowserStore>(
+      "browser_use_stats",
+      {
+        initial: {
+          bySession: {},
+        },
+      },
+    );
+
+    const rpc = context.client.rpc(BrowserUseRpc);
 
     // Listen to usage events from the server plugin
-    context.data.on("browser-use:usage" as any, (event: any) => {
-      const usage = event as BrowserUseUsageEvent;
-      setStats((prev) => ({
-        steps: prev.steps + (usage.steps || 1),
-        cost: prev.cost + (usage.cost || 0),
-      }));
+    const stopUsage = rpc.events.on("usage", (event) => {
+      const usage = event.data as unknown as BrowserUseUsageEvent;
+      const steps = usage.steps || 1;
+      const cost = usage.cost || 0;
+      const sid = usage.sessionID;
+      const provider = usage.provider || "jev";
+
+      if (sid) {
+        void setStats((draft) => {
+          const prev = draft.bySession[sid] || { steps: 0, cost: 0, provider };
+          draft.bySession[sid] = {
+            steps: prev.steps + steps,
+            cost: Number((prev.cost + cost).toFixed(4)),
+            provider,
+          };
+        });
+      }
     });
 
     // Listen for missing key events and prompt user immediately
-    context.data.on("browser-use:missing-key" as any, async (event: any) => {
-      const missing = event as MissingKeyEvent;
+    const stopMissingKey = rpc.events.on("missing_key", async (event) => {
+      const missing = event.data as unknown as MissingKeyEvent;
       const confirm = await context.ui.dialog.confirm({
         title: "Browser Use: Key Missing",
         message: `The ${missing.provider.toUpperCase()} API key (${missing.service}) is missing from Keychain. Configure it now?`,
@@ -36,11 +63,7 @@ export default Plugin.define({
       });
       if (!secret) return;
 
-      await (context.client as any).plugin?.call?.({
-        id: "browser-use",
-        method: "storeKeychainSecret",
-        params: { service: missing.service, secret },
-      });
+      await rpc.storeKeychainSecret({ service: missing.service, secret });
 
       context.ui.toast.show({
         title: "Browser Use",
@@ -60,9 +83,9 @@ export default Plugin.define({
           run: async (input?: string) => {
             const sub = input?.trim().toLowerCase();
             if (sub === "auth") {
-              await promptAuth(context);
+              await promptAuth(context, rpc);
             } else if (sub === "provider") {
-              await promptProvider(context);
+              await promptProvider(context, rpc);
             } else {
               const choice = await context.ui.dialog.select({
                 title: "Browser Use Settings",
@@ -81,8 +104,8 @@ export default Plugin.define({
                   },
                 ],
               });
-              if (choice === "auth") await promptAuth(context);
-              if (choice === "provider") await promptProvider(context);
+              if (choice === "auth") await promptAuth(context, rpc);
+              if (choice === "provider") await promptProvider(context, rpc);
             }
           },
         },
@@ -92,27 +115,83 @@ export default Plugin.define({
     // Mount token/cost counter in the prompt footer status slot
     context.ui.slot({
       append: "prompt.footer.status",
-      render: () => {
-        const current = stats();
-        if (current.steps === 0) return null;
+      render: (input) => {
+        const sid = input?.sessionID;
+        if (!sid) return null;
 
-        // Default info (Sky Blue), amber if single-session cost exceeds $0.05
-        const color =
-          current.cost > 0.05
-            ? context.theme.warning
-            : (context.theme.info ?? "#38bdf8");
+        // Check stored session stats
+        const sessionStats = stats.bySession[sid];
+        let steps = sessionStats?.steps ?? 0;
+        let cost = sessionStats?.cost ?? 0;
+        let historicalProvider: "google" | "jev" = "jev";
+
+        // If not in store yet or 0, inspect session messages for historical tool calls
+        if (steps === 0) {
+          try {
+            const msgs = context.data.session.message.list(sid) ?? [];
+            let callCount = 0;
+            for (const m of msgs) {
+              if (m.type === "assistant" && Array.isArray((m as any).content)) {
+                for (const part of (m as any).content) {
+                  if (part.type === "tool") {
+                    if (
+                      part.name === "browser_use" ||
+                      part.name === "browser-use"
+                    ) {
+                      callCount++;
+                      if (part.state?.input?.provider === "google") {
+                        historicalProvider = "google";
+                      }
+                    } else if (part.name === "execute") {
+                      const inputStr = JSON.stringify(part.state?.input ?? "");
+                      if (
+                        inputStr.includes("browser_use") ||
+                        inputStr.includes("browser-use")
+                      ) {
+                        callCount++;
+                        if (
+                          inputStr.includes('"provider":"google"') ||
+                          inputStr.includes('"provider": "google"')
+                        ) {
+                          historicalProvider = "google";
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            if (callCount > 0) {
+              steps = callCount;
+              cost = Number((callCount * 0.004).toFixed(4));
+            }
+          } catch {
+            // Data sync or parse fallback
+          }
+        }
+
+        if (steps === 0) return null;
+
+        const provider = sessionStats?.provider ?? historicalProvider;
+        const providerLabel = provider === "jev" ? "JEV" : "Google";
+        const roundedCost = (Math.ceil(cost * 100) / 100).toFixed(2);
 
         return (
-          <text fg={color}>
-            {` · 🌐 Browser: ${current.steps} acts ($${current.cost.toFixed(3)})`}
+          <text fg={context.theme.text.muted}>
+            {`browser-use: $${roundedCost}·${providerLabel}`}
           </text>
         );
       },
     });
+
+    return () => {
+      stopUsage();
+      stopMissingKey();
+    };
   },
 });
 
-async function promptAuth(context: any) {
+async function promptAuth(context: any, rpc: any) {
   const provider = await context.ui.dialog.select({
     title: "Select Key to Configure",
     options: [
@@ -131,11 +210,7 @@ async function promptAuth(context: any) {
   });
   if (!secret) return;
 
-  await (context.client as any).plugin?.call?.({
-    id: "browser-use",
-    method: "storeKeychainSecret",
-    params: { service: provider, secret },
-  });
+  await rpc.storeKeychainSecret({ service: provider, secret });
   context.ui.toast.show({
     title: "Browser Use",
     message: `Saved ${provider} to Keychain`,
@@ -143,32 +218,28 @@ async function promptAuth(context: any) {
   });
 }
 
-async function promptProvider(context: any) {
+async function promptProvider(context: any, rpc: any) {
   const choice = await context.ui.dialog.select({
     title: "Select Active Provider",
     options: [
+      {
+        title: "TypeSafe Jev Ultrafast (Recommended)",
+        value: "jev",
+        description: "Sub-100ms action space classifier",
+      },
       {
         title: "Google Gemini (gemini-flash-lite-latest)",
         value: "google",
         description: "Multimodal Playwright agent",
       },
-      {
-        title: "TypeSafe Jev Ultrafast",
-        value: "jev",
-        description: "Sub-100ms action space classifier",
-      },
     ],
   });
   if (!choice) return;
 
-  await (context.client as any).plugin?.call?.({
-    id: "browser-use",
-    method: "setActiveProvider",
-    params: choice as "google" | "jev",
-  });
+  await rpc.setActiveProvider({ provider: choice as "google" | "jev" });
   context.ui.toast.show({
     title: "Browser Use",
-    message: `Default provider set to ${choice}`,
+    message: `Default provider set to ${choice.toUpperCase()}`,
     variant: "success",
   });
 }

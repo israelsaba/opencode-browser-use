@@ -216,6 +216,23 @@ class GoogleBrowserProvider:
                 file=sys.stderr,
             )
 
+        steps = 1
+        if hasattr(history, "number_of_steps"):
+            try:
+                steps = history.number_of_steps()
+            except Exception:
+                pass
+        elif hasattr(history, "model_actions"):
+            try:
+                steps = len(history.model_actions())
+            except Exception:
+                pass
+
+        print(
+            json.dumps({"usage": {"steps": max(1, steps), "provider": "google"}}),
+            file=sys.stderr,
+        )
+
         result = history.final_result()
         if result is None:
             raise RuntimeError(
@@ -237,6 +254,15 @@ class JevBrowserProvider:
                 "  uv pip install 'git+https://github.com/browser-use/jev-ultrafast.git' 'browser-harness==0.1.13'"
             ) from exc
 
+        # Set default CDP URL if port 9222 is active and not explicitly overridden
+        if not os.environ.get("BU_CDP_URL") and not os.environ.get("BU_CDP_WS"):
+            try:
+                import urllib.request
+                with urllib.request.urlopen("http://127.0.0.1:9222/json/version", timeout=1):
+                    os.environ["BU_CDP_URL"] = "http://127.0.0.1:9222"
+            except Exception:
+                pass
+
         # 1. Authenticate TypeSafe API key
         typesafe_key = get_keychain_secret(
             service=KEYCHAIN_SERVICE_TYPESAFE,
@@ -257,7 +283,7 @@ class JevBrowserProvider:
             if google_key:
                 os.environ["TEXT_MODEL_API_KEY"] = google_key
                 os.environ["TEXT_MODEL_BASE_URL"] = "https://generativelanguage.googleapis.com/v1beta/openai"
-                os.environ.setdefault("TEXT_MODEL", "gemini-2.5-flash")
+                os.environ.setdefault("TEXT_MODEL", "gemini-3.8-flash")
                 os.environ.setdefault("TEXT_MODEL_REASONING", "none")
             else:
                 text_key = try_get_keychain_secret(
@@ -313,6 +339,11 @@ class JevBrowserProvider:
                 file=sys.stderr,
             )
 
+        print(
+            json.dumps({"usage": {"steps": max(1, step_count), "provider": "jev"}}),
+            file=sys.stderr,
+        )
+
         status = last_state.get("status")
         if status == "blocked":
             raise RuntimeError(
@@ -355,8 +386,8 @@ PROVIDERS: dict[str, type[BrowserProvider]] = {
 
 
 def resolve_provider(cli_provider: str | None) -> str:
-    """Resolve provider from CLI flag, env var, or default ('google')."""
-    provider = cli_provider or os.environ.get("BROWSER_USE_PROVIDER") or "google"
+    """Resolve provider from CLI flag, env var, or default ('jev')."""
+    provider = cli_provider or os.environ.get("BROWSER_USE_PROVIDER") or "jev"
     normalized = provider.strip().lower()
     if normalized not in PROVIDERS:
         valid = ", ".join(PROVIDERS.keys())
@@ -381,7 +412,7 @@ def parse_args() -> argparse.Namespace:
         choices=["google", "jev"],
         type=str.lower,
         default=None,
-        help="Browser agent provider ('google' or 'jev'). Defaults to $BROWSER_USE_PROVIDER or 'google'.",
+        help="Browser agent provider ('google' or 'jev'). Defaults to $BROWSER_USE_PROVIDER or 'jev'.",
     )
     parser.add_argument(
         "--url",

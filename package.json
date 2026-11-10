@@ -17,17 +17,18 @@
     "@opencode/plugin": "latest"
   },
   "peerDependencies": {
-    "@opentui/core": ">=0.6.6",
-    "@opentui/solid": ">=0.6.6",
+    "@opentui/core": ">=0.8.0",
+    "@opentui/solid": ">=0.8.0",
     "solid-js": ">=1.9.0"
   },
   "devDependencies": {
-    "@biomejs/biome": "^1.9.4",
-    "@opentui/core": "^0.8.1",
-    "@opentui/solid": "^0.8.1",
-    "@types/node": "^22.10.0",
-    "solid-js": "^1.9.0",
-    "typescript": "^5.7.0",
-    "vitest": "^2.1.0"
+    "@biomejs/biome": "^2.6.6",
+    "@opentui/core": "^0.8.3",
+    "@opentui/solid": "^0.8.3",
+    "@types/node": "^26.6.6",
+    "solid-js": "^1.9.18",
+    "typescript": "^7.0.2",
+    "vite": "^6.4.0",
+    "vitest": "^5.1.0"
   }
 }

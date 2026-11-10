@@ -131,4 +131,16 @@ describe("Browser Use Plugin", () => {
       }
     });
   });
+
+  describe("BrowserUseRpc schema", () => {
+    it("exports valid Rpc definition with id and events", async () => {
+      const { BrowserUseRpc } = await import("../src/rpc.js");
+      expect(BrowserUseRpc.id).toBe("browser-use");
+      expect(BrowserUseRpc.events.usage).toBeDefined();
+      expect(BrowserUseRpc.events.missing_key).toBeDefined();
+      expect(BrowserUseRpc.methods.storeKeychainSecret).toBeDefined();
+      expect(BrowserUseRpc.methods.getActiveProvider).toBeDefined();
+      expect(BrowserUseRpc.methods.setActiveProvider).toBeDefined();
+    });
+  });
 });

@@ -28,7 +28,7 @@ mcp = FastMCP(
 @mcp.tool()
 async def browser_use(
     task: str,
-    provider: str = "google",
+    provider: str = "jev",
     url: str | None = None,
     headed: bool = False,
 ) -> str:
@@ -36,7 +36,7 @@ async def browser_use(
 
     Args:
         task: The goal or question to execute in the browser.
-        provider: Engine provider ('google' or 'jev'). Defaults to 'google'.
+        provider: Engine provider ('jev' or 'google'). Defaults to 'jev'.
         url: Optional starting URL to navigate to.
         headed: Show the browser window (defaults to False for headless).
 
