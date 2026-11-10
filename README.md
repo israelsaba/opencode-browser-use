@@ -79,6 +79,30 @@ Within any OpenCode session:
 /browser-use provider
 ```
 
+### MCP Server (`opencode mcp`)
+
+You can also use it as a standalone local MCP server in `opencode.json(c)`:
+
+```jsonc
+{
+  "mcp": {
+    "browser-use": {
+      "type": "local",
+      "command": [
+        "/Users/israelsaba/.config/opencode/plugins/browser-use/start-mcp.sh"
+      ],
+      "enabled": true
+    }
+  }
+}
+```
+
+View active connection with:
+```bash
+opencode mcp list
+# ✓ browser-use       connected
+```
+
 ### Tool Execution (`browser_use`)
 
 OpenCode agents automatically invoke `browser_use` for web navigation and inspection tasks:
