@@ -3,7 +3,7 @@
     "target": "ES2022",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "jsx": "preserve",
+    "jsx": "react-jsx",
     "jsxImportSource": "@opentui/solid",
     "strict": true,
     "noImplicitAny": true,
